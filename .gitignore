@@ -1,0 +1,14 @@
+# Ambiente virtual
+venvT2/
+
+# Sons gerados automaticamente
+sounds/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Sistemas operacionais
+.DS_Store
+Thumbs.db
