@@ -25,9 +25,7 @@ try:
 except ImportError:
     PYGAME_OK = False
 
-# ──────────────────────────────────────────────
 #  GERAÇÃO DE SONS
-# ──────────────────────────────────────────────
 NOTES = {
     "do":  261.63,
     "re":  293.66,
@@ -82,9 +80,8 @@ def gerar_todos_sons():
             sons[nome] = pygame.mixer.Sound(path)
     return sons
 
-# ──────────────────────────────────────────────
+
 #  DETECTOR ARUCO
-# ──────────────────────────────────────────────
 def get_aruco_detector():
     dicionario = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     params = cv2.aruco.DetectorParameters()
@@ -94,7 +91,7 @@ DETECTOR = get_aruco_detector()
 MARKER_SIZE_CM = 5.0
 
 FOCAL = 600.0
-# Centro da imagem ajustado para 1280x720
+
 CAMERA_MATRIX = np.array([
     [FOCAL, 0,     640.0],
     [0,     FOCAL, 360.0],
@@ -160,7 +157,7 @@ def distancia_aruco(frame):
     if ids is None or len(ids) < 1:
         cv2.putText(frame, "Mostre um marcador ArUco", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        return frame  # ← retorno explícito
+        return frame
 
     cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
@@ -189,11 +186,11 @@ def distancia_aruco(frame):
 
         desenha_cubo(frame, rvec, tvec)
 
-    return frame  # ← retorno que estava faltando
+    return frame
 
-# ──────────────────────────────────────────────
+
 #  MÓDULO 2 – OCARINA
-# ──────────────────────────────────────────────
+
 FURO_MAP = {1: "do", 2: "re", 3: "mi", 4: "fa", 5: "sol"}
 FURO_CORES = {
     "do":  (255,  80,  80),
@@ -261,9 +258,9 @@ def ocarina_frame(frame, sons):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
     return frame
 
-# ──────────────────────────────────────────────
-#  MÓDULO 3 – AR SEM MARCADORES (MediaPipe + 3D)
-# ──────────────────────────────────────────────
+
+#  MÓDULO 3 – AR SEM MARCADORES
+
 def desenhar_objeto_3d(frame, cx, cy, raio=60):
     t = time.time()
     angulo = t * 1.5
@@ -352,9 +349,9 @@ def ar_mao_frame(frame, hands):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
     return frame
 
-# ──────────────────────────────────────────────
-#  GUI PRINCIPAL (Tkinter)
-# ──────────────────────────────────────────────
+
+#  GUI PRINCIPAL
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -483,7 +480,6 @@ class App:
 
             ok, frame = self.cap.read()
             if not ok or frame is None:
-                # Tenta uma vez mais antes de desistir
                 time.sleep(0.05)
                 continue
 
@@ -498,7 +494,6 @@ class App:
                 elif modo == "ar_mao":
                     frame = ar_mao_frame(frame, self.hands)
             except Exception as e:
-                # Loga o erro mas não derruba a thread
                 print(f"[ERRO no frame]: {e}")
                 time.sleep(0.03)
                 continue
