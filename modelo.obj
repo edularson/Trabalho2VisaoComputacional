@@ -1,0 +1,42 @@
+# Cristal / Diamante – modelo para TP2 Visão Computacional
+# 9 vértices, 16 faces triangulares
+
+v  0.0    1.0    0.0
+v  1.0    0.2    0.0
+v  0.309  0.2    0.951
+v -0.809  0.2    0.588
+v -0.809  0.2   -0.588
+v  0.309  0.2   -0.951
+v  1.0   -0.2    0.0
+v  0.309 -0.2    0.951
+v -0.809 -0.2    0.588
+v -0.809 -0.2   -0.588
+v  0.309 -0.2   -0.951
+v  1.0   -0.2    0.0
+v  0.0   -1.0    0.0
+
+# Topo (pico superior para cintura)
+f 1 2 3
+f 1 3 4
+f 1 4 5
+f 1 5 6
+f 1 6 2
+
+# Faixa do meio (cintura superior → inferior)
+f 2 7 3
+f 3 7 8
+f 3 8 4
+f 4 8 9
+f 4 9 5
+f 5 9 10
+f 5 10 6
+f 6 10 11
+f 6 11 2
+f 2 11 7
+
+# Base (pico inferior)
+f 13 8 7
+f 13 9 8
+f 13 10 9
+f 13 11 10
+f 13 7 11

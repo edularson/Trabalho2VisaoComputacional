@@ -25,13 +25,15 @@ try:
 except ImportError:
     PYGAME_OK = False
 
-#  GERAÇÃO DE SONS
+
+#  gerar sons
 NOTES = {
     "do":  261.63,
     "re":  293.66,
     "mi":  329.63,
     "fa":  349.23,
     "sol": 392.00,
+    "la":  440.00,
 }
 
 SOUND_DIR = "sounds"
@@ -50,23 +52,18 @@ def gerar_wav(filename, freq, duration=0.8, sample_rate=44100):
 
         for i in range(n):
             t = i / sample_rate
-
             vibrato = 1 + 0.005 * math.sin(2 * math.pi * 5 * t)
             f_vibrato = freq * vibrato
-
             onda = (math.sin(2 * math.pi * f_vibrato * t) +
                     0.3 * math.sin(2 * math.pi * 2 * f_vibrato * t) +
                     0.1 * math.sin(2 * math.pi * 3 * f_vibrato * t))
             onda /= 1.4
-
             ataque_sopro = 0
             if t < 0.1:
                 ruido = random.uniform(-1, 1)
                 intensidade_sopro = (0.1 - t) * 5
                 ataque_sopro = ruido * intensidade_sopro * 0.2
-
             env = min(t / 0.1, 1.0) * max(1.0 - (t - (duration - 0.2)) / 0.2, 0.0)
-
             val = 32767 * env * (onda + ataque_sopro)
             sample = int(max(-32768, min(32767, val)))
             f.writeframes(struct.pack("<h", sample))
@@ -81,17 +78,16 @@ def gerar_todos_sons():
     return sons
 
 
-#  DETECTOR ARUCO
+# detecta o aruco
 def get_aruco_detector():
     dicionario = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
     params = cv2.aruco.DetectorParameters()
     return cv2.aruco.ArucoDetector(dicionario, params)
 
 DETECTOR = get_aruco_detector()
-MARKER_SIZE_CM = 5.0
+MARKER_SIZE_CM = 2.0
 
 FOCAL = 600.0
-
 CAMERA_MATRIX = np.array([
     [FOCAL, 0,     640.0],
     [0,     FOCAL, 360.0],
@@ -107,9 +103,16 @@ OBJ_POINTS = np.array([
     [-HALF, -HALF, 0],
 ], dtype=np.float64)
 
-def desenha_cubo(frame, rvec, tvec):
-    h = MARKER_SIZE_CM
+def estimar_pose(corner):
+    img_points = corner[0].astype(np.float64)
+    ok, rvec, tvec = cv2.solvePnP(
+        OBJ_POINTS, img_points, CAMERA_MATRIX, DIST_COEFFS,
+        flags=cv2.SOLVEPNP_IPPE_SQUARE
+    )
+    return ok, rvec, tvec
 
+def desenha_cubo(frame, rvec, tvec, cor_base=(0, 180, 0)):
+    h = MARKER_SIZE_CM
     vertices_3d = np.float32([
         [-HALF, -HALF,  0],
         [ HALF, -HALF,  0],
@@ -120,26 +123,16 @@ def desenha_cubo(frame, rvec, tvec):
         [ HALF,  HALF,  h],
         [-HALF,  HALF,  h],
     ])
-
     pts2d, _ = cv2.projectPoints(vertices_3d, rvec, tvec, CAMERA_MATRIX, DIST_COEFFS)
     pts = pts2d.reshape(-1, 2).astype(int)
-
     base = pts[:4]
     topo = pts[4:]
-
-    # Arestas da base (verde)
     for i in range(4):
-        cv2.line(frame, tuple(base[i]), tuple(base[(i + 1) % 4]), (0, 180, 0), 2)
-
-    # Arestas do topo (amarelo)
+        cv2.line(frame, tuple(base[i]), tuple(base[(i + 1) % 4]), cor_base, 2)
     for i in range(4):
         cv2.line(frame, tuple(topo[i]), tuple(topo[(i + 1) % 4]), (255, 220, 0), 2)
-
-    # Arestas verticais (branco)
     for i in range(4):
         cv2.line(frame, tuple(base[i]), tuple(topo[i]), (255, 255, 255), 2)
-
-    # Faces semitransparentes
     overlay = frame.copy()
     faces = [
         ([topo[0], topo[1], base[1], base[0]], (200, 230, 255)),
@@ -150,123 +143,273 @@ def desenha_cubo(frame, rvec, tvec):
         cv2.fillPoly(overlay, [np.array(pontos)], cor)
     cv2.addWeighted(overlay, 0.25, frame, 0.75, 0, frame)
 
+
+
+# METROLOGIA
+
 def distancia_aruco(frame):
     cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = DETECTOR.detectMarkers(cinza)
 
     if ids is None or len(ids) < 1:
-        cv2.putText(frame, "Mostre um marcador ArUco", (10, 30),
+        cv2.putText(frame, "Mostre pelo menos 1 marcador ArUco", (10, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
     cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
+    poses = {}
+    centros_px = {}
     for i, corner in enumerate(corners):
-        img_points = corner[0].astype(np.float64)
-
-        ok, rvec, tvec = cv2.solvePnP(
-            OBJ_POINTS, img_points, CAMERA_MATRIX, DIST_COEFFS,
-            flags=cv2.SOLVEPNP_IPPE_SQUARE
-        )
-
+        mid = int(ids[i][0])
+        ok, rvec, tvec = estimar_pose(corner)
         if not ok:
             continue
-
-        rvec = rvec.flatten()
-        tvec = tvec.flatten()
-
+        poses[mid] = (rvec.flatten(), tvec.flatten())
         c = corner[0]
         cx = int(c[:, 0].mean())
         cy = int(c[:, 1].mean())
+        centros_px[mid] = (cx, cy)
 
-        dist_z = float(tvec[2])
-        mid = ids[i][0]
-        cv2.putText(frame, f"ID{mid} | {dist_z:.1f}cm", (cx - 40, cy - 20),
+        dist_z = float(tvec.flatten()[2])
+        cv2.putText(frame, f"ID{mid} | Z={dist_z:.1f}cm", (cx - 50, cy - 25),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 220, 0), 2)
-
         desenha_cubo(frame, rvec, tvec)
+
+    # distancia 3D entre cada par
+    mids = sorted(poses.keys())
+    y_texto = 35
+    for idx_a in range(len(mids)):
+        for idx_b in range(idx_a + 1, len(mids)):
+            id_a, id_b = mids[idx_a], mids[idx_b]
+            tvec_a = poses[id_a][1]
+            tvec_b = poses[id_b][1]
+            dist_3d = float(np.linalg.norm(tvec_a - tvec_b))
+
+            pa = centros_px[id_a]
+            pb = centros_px[id_b]
+            cv2.line(frame, pa, pb, (0, 255, 200), 2)
+            mx = (pa[0] + pb[0]) // 2
+            my = (pa[1] + pb[1]) // 2
+            cv2.putText(frame, f"{dist_3d:.1f}cm", (mx - 30, my - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 200), 2)
+
+            cv2.putText(frame,
+                        f"ID{id_a}<->ID{id_b}: {dist_3d:.1f} cm",
+                        (10, y_texto),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 200), 2)
+            y_texto += 30
+
+    if len(mids) < 2:
+        cv2.putText(frame, "Mostre 2+ marcadores para medir distancia", (10, y_texto),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
 
     return frame
 
 
-#  MÓDULO 2 – OCARINA
 
-FURO_MAP = {1: "do", 2: "re", 3: "mi", 4: "fa", 5: "sol"}
+#  OCARINA
+
+
+OCARINA_REF_ID   = 0
+OCARINA_HOLE_IDS = [1, 2, 3, 4, 5, 6]
+OCARINA_NOTES    = {
+    0: ("do",  261.63),
+    1: ("re",  293.66),
+    2: ("mi",  329.63),
+    3: ("fa",  349.23),
+    4: ("sol", 392.00),
+    5: ("la",  440.00),
+}
 FURO_CORES = {
     "do":  (255,  80,  80),
     "re":  (255, 180,  50),
     "mi":  (100, 220,  80),
     "fa":  (50,  180, 255),
     "sol": (180,  80, 255),
+    "la":  (255, 100, 200),
+}
+COOLDOWN_S = 0.4   # intervalo entre toques
+
+_ocarina_estado = {
+    "was_covered": {},   
+    "last_played": {},   
 }
 
-_ultima_nota = {}
+def _lerp(a, b, t):
+    return a + t * (b - a)
 
-def tocar_nota(nome, sons):
-    if not PYGAME_OK or nome not in sons:
-        return
-    agora = time.time()
-    if agora - _ultima_nota.get(nome, 0) > 0.5:
-        sons[nome].play()
-        _ultima_nota[nome] = agora
+def _ponto(tl, tr, bl, br, u, v):
+    return _lerp(_lerp(tl, tr, u), _lerp(bl, br, u), v)
+
+def _desenha_ocarina_perspectivada(frame, ref_corners, holes_covered: dict):
+
+    c = ref_corners[0].astype(float)
+    tl, tr, br, bl = c[0], c[1], c[2], c[3]
+
+    body_pts = []
+    for i, t in enumerate(np.linspace(0, 1, 60)):
+        angle = 2 * math.pi * t
+        fatv = 0.5 - 0.5 * math.cos(angle)   
+        ru = 0.55 + 0.25 * fatv               
+        rv = 0.48 + 0.10 * fatv               
+        u = 0.5 + ru * math.cos(angle)
+        v = 0.5 + rv * math.sin(angle)
+        body_pts.append(_ponto(tl, tr, bl, br, u, v))
+    body_arr = np.array(body_pts, dtype=np.int32)
+
+    cv2.fillPoly(frame, [body_arr + np.array([8, 8])], (18, 10, 5))
+
+    overlay = frame.copy()
+    cv2.fillPoly(overlay, [body_arr], (45, 95, 180))    
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+
+    light_pts = []
+    for t in np.linspace(0.55, 0.95, 24):
+        angle = math.pi + math.pi * t
+        fatv  = 0.5 - 0.5 * math.cos(angle)
+        ru = 0.45 + 0.20 * fatv
+        rv = 0.36 + 0.08 * fatv
+        u = 0.5 + ru * math.cos(angle)
+        v = 0.5 + rv * math.sin(angle)
+        light_pts.append(_ponto(tl, tr, bl, br, u, v))
+    ov2 = frame.copy()
+    cv2.fillPoly(ov2, [np.array(light_pts, dtype=np.int32)], (90, 150, 220))
+    cv2.addWeighted(ov2, 0.35, frame, 0.65, 0, frame)
+
+    cv2.polylines(frame, [body_arr], True, (20, 55, 110), 2)
+
+    dec_pts = []
+    for t in np.linspace(0.1, 0.9, 20):
+        u = 0.5 + 0.55 * math.cos(math.pi * t)
+        v = 0.52 + 0.06 * math.sin(math.pi * t)
+        dec_pts.append(_ponto(tl, tr, bl, br, u, v))
+    cv2.polylines(frame, [np.array(dec_pts, dtype=np.int32)], False, (20, 55, 110), 1)
+
+    bocal_base  = _ponto(tl, tr, bl, br, 1.45, 0.38)
+    bocal_meio  = _ponto(tl, tr, bl, br, 1.70, 0.18)
+    bocal_ponta = _ponto(tl, tr, bl, br, 1.80, 0.08)
+    pts_bocal = np.array([bocal_base, bocal_meio, bocal_ponta], dtype=np.int32)
+    cv2.polylines(frame, [pts_bocal], False, (20, 55, 110), 13)
+    cv2.polylines(frame, [pts_bocal], False, (60, 120, 195), 7)
+    cv2.circle(frame, tuple(bocal_ponta.astype(int)), 7, (90, 160, 215), -1)
+    cv2.circle(frame, tuple(bocal_ponta.astype(int)), 7, (20, 55, 110), 2)
+
+    centro = _ponto(tl, tr, bl, br, 0.5, 0.72).astype(int)
+    cv2.putText(frame, "OCARINA", (centro[0] - 36, centro[1] + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 230, 255), 1, cv2.LINE_AA)
+
+    posicoes_furos = [
+        (0.22, 0.32), (0.44, 0.30), (0.66, 0.32),   
+        (0.28, 0.62), (0.50, 0.64), (0.72, 0.62),   
+    ]
+    for i, hid in enumerate(OCARINA_HOLE_IDS):
+        if i >= len(posicoes_furos):
+            break
+        pu, pv = posicoes_furos[i]
+        hole_center = _ponto(tl, tr, bl, br, pu, pv).astype(int)
+        nota_nome = OCARINA_NOTES[i][0]
+        cor_bgr   = FURO_CORES[nota_nome]          
+        coberto   = holes_covered.get(hid, False)
+
+        fill_cor = (15, 10, 8) if coberto else cor_bgr
+        cv2.circle(frame, tuple(hole_center), 10, fill_cor, -1)
+        cv2.circle(frame, tuple(hole_center), 10, (15, 40, 80), 2)
+        if not coberto:
+            brilho = tuple(min(v + 70, 255) for v in cor_bgr)
+            cv2.circle(frame, (hole_center[0] - 3, hole_center[1] - 3), 3, brilho, -1)
+        cv2.putText(frame, nota_nome,
+                    (hole_center[0] - 11, hole_center[1] + 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 255), 1, cv2.LINE_AA)
+
 
 def ocarina_frame(frame, sons):
     cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = DETECTOR.detectMarkers(cinza)
 
-    if ids is None:
-        cv2.putText(frame, "Sem marcadores detectados", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        return frame
+    id_map = {}
+    if ids is not None:
+        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+        for i in range(len(ids)):
+            id_map[int(ids[i][0])] = corners[i]
 
-    detected_ids = set(ids.flatten())
-    centros = {}
-    for i, corner in enumerate(corners):
-        mid = ids[i][0]
-        c = corner[0]
-        cx = int(c[:, 0].mean())
-        cy = int(c[:, 1].mean())
-        centros[mid] = (cx, cy)
+    holes_covered = {hid: (hid not in id_map) for hid in OCARINA_HOLE_IDS}
 
-    if 0 in centros:
-        rx, ry = centros[0]
-        overlay = frame.copy()
-        cv2.ellipse(overlay, (rx, ry), (90, 55), 0, 0, 360, (180, 120, 60), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-        cv2.ellipse(frame, (rx, ry), (90, 55), 0, 0, 360, (120, 80, 30), 2)
-        cv2.putText(frame, "OCARINA", (rx - 35, ry + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 220, 150), 1)
+    if OCARINA_REF_ID in id_map:
+        _desenha_ocarina_perspectivada(frame, id_map[OCARINA_REF_ID], holes_covered)
+    else:
+        cv2.putText(frame, f"Mostre marcador ID={OCARINA_REF_ID} (corpo da ocarina)",
+                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 200, 255), 2)
 
-    for fid, nota in FURO_MAP.items():
-        cor = FURO_CORES[nota]
-        coberto = fid not in detected_ids
+    now = time.time()
+    notas_tocando = []
+    for i, hid in enumerate(OCARINA_HOLE_IDS):
+        coberto  = holes_covered[hid]
+        anterior = _ocarina_estado["was_covered"].get(hid, False)
 
-        cx, cy = centros.get(fid, (None, None))
-
-        if cx is not None:
-            estado_cor = (0, 0, 0) if coberto else cor
-            cv2.circle(frame, (cx, cy), 18, estado_cor, -1)
-            cv2.circle(frame, (cx, cy), 18, (255, 255, 255), 1)
-            cv2.putText(frame, nota, (cx - 10, cy + 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        if coberto and not anterior:   
+            ultimo = _ocarina_estado["last_played"].get(hid, 0)
+            if now - ultimo > COOLDOWN_S and PYGAME_OK:
+                nota_nome = OCARINA_NOTES[i][0]
+                if nota_nome in sons:
+                    sons[nota_nome].play()
+                _ocarina_estado["last_played"][hid] = now
 
         if coberto:
-            tocar_nota(nota, sons)
+            notas_tocando.append(OCARINA_NOTES[i][0])
+        _ocarina_estado["was_covered"][hid] = coberto
 
-    y0 = frame.shape[0] - 30
-    cv2.putText(frame, "Cubra os marcadores para tocar", (10, y0),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+    for i, hid in enumerate(OCARINA_HOLE_IDS):
+        nota_nome = OCARINA_NOTES[i][0]
+        coberto   = holes_covered[hid]
+        simbolo   = "●" if coberto else "○"
+        cor_hud   = FURO_CORES[nota_nome] if coberto else (160, 160, 160)
+        cv2.putText(frame, f"{simbolo} {nota_nome}",
+                    (frame.shape[1] - 120, 35 + 28 * i),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, cor_hud, 2, cv2.LINE_AA)
+
+    h_frame = frame.shape[0]
+    cv2.rectangle(frame, (5, h_frame - 50), (560, h_frame - 5), (18, 18, 18), -1)
+    cv2.putText(frame, "Cubra os marcadores para tocar  |  do re mi fa sol la",
+                (10, h_frame - 28), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+    if notas_tocando:
+        cv2.putText(frame, f"Tocando: {' + '.join(notas_tocando)}",
+                    (10, h_frame - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 150), 1)
+
     return frame
 
 
-#  MÓDULO 3 – AR SEM MARCADORES
 
-def desenhar_objeto_3d(frame, cx, cy, raio=60):
-    t = time.time()
-    angulo = t * 1.5
+#  Modo AR
 
+def _carregar_modelo_obj(path):
+    verts, faces = [], []
+    try:
+        with open(path) as f:
+            for line in f:
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                if parts[0] == "v":
+                    verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                elif parts[0] == "f":
+                    idxs = [int(p.split("/")[0]) - 1 for p in parts[1:]]
+                    for k in range(1, len(idxs) - 1):
+                        faces.append((idxs[0], idxs[k], idxs[k + 1]))
+        if verts and faces:
+            arr = np.array(verts, dtype=np.float64)
+            arr -= arr.mean(axis=0)
+            scale = np.abs(arr).max()
+            if scale > 0:
+                arr /= scale
+            return arr.tolist(), faces
+    except Exception as e:
+        print(f"[OBJ load error]: {e}")
+    return None, None
+
+def _icosaedro():
     phi = (1 + math.sqrt(5)) / 2
-    verts_raw = [
+    verts = [
         (0, 1, phi), (0, -1, phi), (0, 1, -phi), (0, -1, -phi),
         (1, phi, 0), (-1, phi, 0), (1, -phi, 0), (-1, -phi, 0),
         (phi, 0, 1), (-phi, 0, 1), (phi, 0, -1), (-phi, 0, -1),
@@ -277,81 +420,134 @@ def desenhar_objeto_3d(frame, cx, cy, raio=60):
         (5,2,11),(5,11,9),(9,11,7),(9,7,1),(1,7,6),
         (3,6,7),(3,7,11),(3,11,2),(3,2,10),(3,10,6),
     ]
+    arr = np.array(verts, dtype=np.float64)
+    arr /= np.abs(arr).max()
+    return arr.tolist(), faces
 
-    cos_a, sin_a = math.cos(angulo), math.sin(angulo)
+_MODEL_PATH = "modelo.obj"
+_MODEL_VERTS, _MODEL_FACES = _carregar_modelo_obj(_MODEL_PATH)
+if _MODEL_VERTS is None:
+    print("[AR] modelo.obj não encontrado – usando icosaedro procedural.")
+    _MODEL_VERTS, _MODEL_FACES = _icosaedro()
 
-    def rot_y(x, y, z):
-        return cos_a * x + sin_a * z, y, -sin_a * x + cos_a * z
+_MODELO_USANDO = "modelo.obj" if os.path.exists(_MODEL_PATH) else "icosaedro (fallback)"
 
-    fov = 300
+def _rot_y(verts, angulo):
+    ca, sa = math.cos(angulo), math.sin(angulo)
+    return [(ca*x + sa*z, y, -sa*x + ca*z) for x, y, z in verts]
+
+def _rot_x(verts, angulo):
+    ca, sa = math.cos(angulo), math.sin(angulo)
+    return [(x, ca*y - sa*z, sa*y + ca*z) for x, y, z in verts]
+
+def desenhar_objeto_3d(frame, cx, cy, raio=70, angulo_y=0.0, angulo_x=0.0,
+                       cor_base=(100, 120, 255)):
+    fov = 350
+    scale = raio / 1.0
 
     def project(x, y, z):
-        z += 3
-        px = int(cx + fov * x / z)
-        py = int(cy - fov * y / z)
+        z_off = z + 3.5
+        if z_off == 0:
+            z_off = 0.001
+        px = int(cx + fov * (x * scale / fov) / z_off * fov / fov)
+        py = int(cy - fov * (y * scale / fov) / z_off * fov / fov)
         return px, py
 
-    pts2d = []
-    for vx, vy, vz in verts_raw:
-        rx, ry, rz = rot_y(vx, vy, vz)
-        scale = raio / phi
-        pts2d.append(project(rx * scale / fov, ry * scale / fov, rz * scale / fov))
+    verts_rot = _rot_x(_rot_y(_MODEL_VERTS, angulo_y), angulo_x)
+
+    pts2d = [project(x, y, z) for x, y, z in verts_rot]
+
+    luz = np.array([0.5, 0.8, -1.0])
+    luz = luz / np.linalg.norm(luz)
 
     overlay = frame.copy()
-    for face in faces:
+
+    face_depths = []
+    for face in _MODEL_FACES:
         i0, i1, i2 = face
-        v0 = np.array(verts_raw[i0])
-        v1 = np.array(verts_raw[i1])
-        v2 = np.array(verts_raw[i2])
+        z_med = (verts_rot[i0][2] + verts_rot[i1][2] + verts_rot[i2][2]) / 3
+        face_depths.append((z_med, face))
+    face_depths.sort(key=lambda fd: fd[0])
 
-        def rot_v(v):
-            x, y, z = v
-            return np.array([cos_a * x + sin_a * z, y, -sin_a * x + cos_a * z])
+    for _, face in face_depths:
+        i0, i1, i2 = face
+        v0 = np.array(verts_rot[i0])
+        v1 = np.array(verts_rot[i1])
+        v2 = np.array(verts_rot[i2])
+        normal = np.cross(v1 - v0, v2 - v0)
+        norm_len = np.linalg.norm(normal)
+        if norm_len < 1e-8:
+            continue
+        normal /= norm_len
+        if normal[2] > 0:
+            continue
+        diff = float(np.clip(-np.dot(normal, luz), 0, 1))
+        intensidade = int(60 + 180 * diff)
+        r = min(int(cor_base[0] * intensidade / 255), 255)
+        g = min(int(cor_base[1] * intensidade / 255), 255)
+        b = min(int(cor_base[2] * intensidade / 255), 255)
+        pts = np.array([pts2d[i0], pts2d[i1], pts2d[i2]], dtype=np.int32)
+        cv2.fillPoly(overlay, [pts], (b, g, r))
+        cv2.polylines(overlay, [pts], True, (200, 180, 255), 1)
 
-        n = np.cross(rot_v(v1 - v0), rot_v(v2 - v0))
-        if n[2] > 0:
-            pts = np.array([pts2d[i0], pts2d[i1], pts2d[i2]], dtype=np.int32)
-            intensity = int(80 + 120 * abs(n[2]) / (np.linalg.norm(n) + 1e-6))
-            cv2.fillPoly(overlay, [pts], (intensity, intensity // 2, 255))
-            cv2.polylines(overlay, [pts], True, (200, 150, 255), 1)
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
 
-    cv2.addWeighted(overlay, 0.75, frame, 0.25, 0, frame)
+    sx, sy = cx, cy + raio + 12
+    sombra = frame.copy()
+    cv2.ellipse(sombra, (sx, sy), (raio // 2, raio // 7), 0, 0, 360, (15, 15, 15), -1)
+    cv2.addWeighted(sombra, 0.5, frame, 0.5, 0, frame)
 
-    sx, sy = cx, cy + raio + 10
-    cv2.ellipse(frame, (sx, sy), (raio // 2, raio // 6), 0, 0, 360, (30, 30, 30), -1)
 
-def ar_mao_frame(frame, hands):
+def ar_mao_frame(frame, hands, estado_ar):
+
     if not MEDIAPIPE_OK or hands is None:
-        cv2.putText(frame, "MediaPipe nao disponivel", (10, 30),
+        cv2.putText(frame, "MediaPipe nao disponivel", (10, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands.process(rgb)
 
+    h, w = frame.shape[:2]
+
     if result.multi_hand_landmarks:
         for hlm in result.multi_hand_landmarks:
             mp.solutions.drawing_utils.draw_landmarks(
                 frame, hlm, mp.solutions.hands.HAND_CONNECTIONS,
-                mp.solutions.drawing_utils.DrawingSpec(color=(100, 255, 100), thickness=1, circle_radius=2),
-                mp.solutions.drawing_utils.DrawingSpec(color=(50, 200, 50), thickness=1),
+                mp.solutions.drawing_utils.DrawingSpec(
+                    color=(100, 255, 100), thickness=1, circle_radius=2),
+                mp.solutions.drawing_utils.DrawingSpec(
+                    color=(50, 200, 50), thickness=1),
             )
-            h, w = frame.shape[:2]
-            p0 = hlm.landmark[0]
-            p9 = hlm.landmark[9]
+            p0  = hlm.landmark[0] 
+            p9  = hlm.landmark[9]
+            p17 = hlm.landmark[17] 
+
             cx = int((p0.x + p9.x) / 2 * w)
             cy = int((p0.y + p9.y) / 2 * h)
-            raio = int(abs(p9.y - p0.y) * h * 1.2)
-            raio = max(30, min(raio, 100))
-            desenhar_objeto_3d(frame, cx, cy, raio)
+
+            raio = int(abs(p9.y - p0.y) * h * 1.4)
+            raio = max(35, min(raio, 120))
+
+            incl = (p17.y - p9.y) * h
+            angulo_x = float(np.clip(incl / 100.0, -0.6, 0.6))
+
+            angulo_y = estado_ar["angulo_y"]
+
+            desenhar_objeto_3d(frame, cx, cy, raio,
+                               angulo_y=angulo_y, angulo_x=angulo_x,
+                               cor_base=(100, 120, 255))
+
     else:
-        cv2.putText(frame, "Mostre a mao para a camera", (10, 30),
+        cv2.putText(frame, "Mostre a mao para a camera", (10, 35),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
+
+    cv2.putText(frame, f"Modelo: {_MODELO_USANDO}", (10, h - 15),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
     return frame
 
 
-#  GUI PRINCIPAL
-
+# interface 
 class App:
     def __init__(self, root):
         self.root = root
@@ -366,6 +562,8 @@ class App:
 
         self.sons = {}
         self.hands = None
+
+        self._estado_ar = {"angulo_y": 0.0}
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self.fechar)
@@ -485,6 +683,8 @@ class App:
 
             frame = cv2.resize(frame, (1280, 720))
 
+            self._estado_ar["angulo_y"] = (time.time() * 1.5) % (2 * math.pi)
+
             try:
                 modo = self.modo.get()
                 if modo == "metrologia":
@@ -492,7 +692,7 @@ class App:
                 elif modo == "ocarina":
                     frame = ocarina_frame(frame, self.sons)
                 elif modo == "ar_mao":
-                    frame = ar_mao_frame(frame, self.hands)
+                    frame = ar_mao_frame(frame, self.hands, self._estado_ar)
             except Exception as e:
                 print(f"[ERRO no frame]: {e}")
                 time.sleep(0.03)
